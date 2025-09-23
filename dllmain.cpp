@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <xinput.h>
 #include <string>
+#include <psapi.h>
 
 char g_gameDir[MAX_PATH] = {};
 
@@ -16,6 +17,23 @@ void InitLogFile() {
         fprintf(gLogFile, "---- Log Started ----\n");
         fflush(gLogFile);
     }
+}
+
+uintptr_t FindPattern(uintptr_t base, DWORD size, const char* pattern, const char* mask) {
+    size_t patternLength = strlen(mask);
+    for (uintptr_t i = 0; i < size - patternLength; i++) {
+        bool found = true;
+        for (uintptr_t j = 0; j < patternLength; j++) {
+            if (mask[j] != '?' && pattern[j] != *(char*)(base + i + j)) {
+                found = false;
+                break;
+            }
+        }
+        if (found) {
+            return base + i;
+        }
+    }
+    return 0;
 }
 
 void Log(const char* fmt, ...) {
@@ -144,24 +162,48 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         std::thread([hModule] {
             InitLogFile();
 
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            DetourTransactionCommit();
-
             uintptr_t base = (uintptr_t)GetModuleHandleA(NULL);
-            uintptr_t target = base + 0x4988F0;
-            const unsigned char pattern[] = { 0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55 };
-
-            Log("Waiting for function at %p to match prologue...", (void*)target);
-            for (;;) {
-                if (memcmp((void*)target, pattern, sizeof(pattern)) == 0) break;
-                Sleep(10);
+            if (!base) {
+                Log("Failed to get module handle. (Somehow??)");
+                return;
             }
-            Log("Function prologue matched, attaching detours.");
 
-            oAssetLoader = (AssetLoader_t)target;
-            oInitialFileCheck = (InitialFileCheck_t)(base + 0x51BF50);
-            oDebugLogger = (DebugLogger_t)(base + 0x452990);
+            MODULEINFO moduleInfo;
+            GetModuleInformation(GetCurrentProcess(), (HMODULE)base, &moduleInfo, sizeof(MODULEINFO));
+            DWORD moduleSize = moduleInfo.SizeOfImage;
+
+            // --- Signatures ---
+            const char* assetLoaderSig = "\x40\x55\x53\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8D\x6C\x24\x98";
+            const char* assetLoaderMask = "xxxxxxxxxxxxxxxxxx";
+
+            const char* initialFileCheckSig = "\x48\x89\x5C\x24\x20\x55\x56\x57\x41\x56\x41\x57\x48\x8D\xAC\x24\x90\xFC\xFF\xFF";
+            const char* initialFileCheckMask = "xxxxxxxxxxxxxxxxxxxx";
+
+            const char* debugLoggerSig = "\x83\xF9\x02\x0F\x8C\x82\x00\x00\x00\x4C\x89\x4C\x24\x20\x53\x57";
+            const char* debugLoggerMask = "xxxxxxxxxxxxxxxx";
+
+            // --- Scanning ---
+            Log("Scanning for signatures...");
+            uintptr_t assetLoaderAddr = FindPattern(base, moduleSize, assetLoaderSig, assetLoaderMask);
+            uintptr_t initialFileCheckAddr = FindPattern(base, moduleSize, initialFileCheckSig, initialFileCheckMask);
+            uintptr_t debugLoggerAddr = FindPattern(base, moduleSize, debugLoggerSig, debugLoggerMask);
+
+            // --- Validation ---
+            if (!assetLoaderAddr || !initialFileCheckAddr || !debugLoggerAddr) {
+                if (!assetLoaderAddr) Log("AssetLoader signature not found!");
+                if (!initialFileCheckAddr) Log("InitialFileCheck signature not found!");
+                if (!debugLoggerAddr) Log("DebugLogger signature not found!");
+                Log("Aborting due to missing signatures.");
+                return;
+            }
+
+            Log("Found AssetLoader at: %p", (void*)assetLoaderAddr);
+            Log("Found InitialFileCheck at: %p", (void*)initialFileCheckAddr);
+            Log("Found DebugLogger at: %p", (void*)debugLoggerAddr);
+
+            oAssetLoader = (AssetLoader_t)assetLoaderAddr;
+            oInitialFileCheck = (InitialFileCheck_t)initialFileCheckAddr;
+            oDebugLogger = (DebugLogger_t)debugLoggerAddr;
 
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
@@ -169,6 +211,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             DetourAttach((void**)&oInitialFileCheck, InitialFileCheck);
             DetourAttach((void**)&oDebugLogger, DebugLogger);
             DetourTransactionCommit();
+
+            Log("All detours attached successfully.");
 
             }).detach();
     }
