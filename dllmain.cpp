@@ -176,8 +176,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             const char* assetLoaderSig = "\x40\x55\x53\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8D\x6C\x24\x98";
             const char* assetLoaderMask = "xxxxxxxxxxxxxxxxxx";
 
-            const char* initialFileCheckSig = "\x48\x89\x5C\x24\x20\x55\x56\x57\x41\x56\x41\x57\x48\x8D\xAC\x24\x90\xFC\xFF\xFF";
-            const char* initialFileCheckMask = "xxxxxxxxxxxxxxxxxxxx";
+            const char* initialFileCheckSig_GLB = "\x48\x89\x5C\x24\x20\x55\x56\x57\x41\x56\x41\x57\x48\x8D\xAC\x24\x90\xFC\xFF\xFF";
+            const char* initialFileCheckMask_GLB = "xxxxxxxxxxxxxxxxxxxx";
+
+            const char* initialFileCheckSig_CLE = "\x48\x89\x5C\x24\x20\x55\x56\x57\x41\x56\x41\x57\x48\x81\xEC\x60\x02\x00\x00";
+            const char* initialFileCheckMask_CLE = "xxxxxxxxxxxxxxxxxxx";
 
             const char* debugLoggerSig = "\x83\xF9\x02\x0F\x8C\x82\x00\x00\x00\x4C\x89\x4C\x24\x20\x53\x57";
             const char* debugLoggerMask = "xxxxxxxxxxxxxxxx";
@@ -185,8 +188,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             // --- Scanning ---
             Log("Scanning for signatures...");
             uintptr_t assetLoaderAddr = FindPattern(base, moduleSize, assetLoaderSig, assetLoaderMask);
-            uintptr_t initialFileCheckAddr = FindPattern(base, moduleSize, initialFileCheckSig, initialFileCheckMask);
             uintptr_t debugLoggerAddr = FindPattern(base, moduleSize, debugLoggerSig, debugLoggerMask);
+
+            uintptr_t initialFileCheckAddr = FindPattern(base, moduleSize, initialFileCheckSig_GLB, initialFileCheckMask_GLB);
+
+            if (!initialFileCheckAddr) {
+                Log("Global signature not found. Scanning for CLE...");
+                initialFileCheckAddr = FindPattern(base, moduleSize, initialFileCheckSig_CLE, initialFileCheckMask_CLE);
+            }
 
             // --- Validation ---
             if (!assetLoaderAddr || !initialFileCheckAddr || !debugLoggerAddr) {
