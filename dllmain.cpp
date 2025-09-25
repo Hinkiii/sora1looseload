@@ -206,9 +206,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
                 return;
             }
 
-            Log("Found AssetLoader at: %p", (void*)assetLoaderAddr);
-            Log("Found InitialFileCheck at: %p", (void*)initialFileCheckAddr);
-            Log("Found DebugLogger at: %p", (void*)debugLoggerAddr);
+            Log("Found AssetLoader at: %p (offset: 0x%zX)", (void*)assetLoaderAddr, assetLoaderAddr - base);
+            Log("Found InitialFileCheck at: %p (offset: 0x%zX)", (void*)initialFileCheckAddr, initialFileCheckAddr - base);
+            Log("Found DebugLogger at: %p (offset: 0x%zX)", (void*)debugLoggerAddr, debugLoggerAddr - base);
 
             oAssetLoader = (AssetLoader_t)assetLoaderAddr;
             oInitialFileCheck = (InitialFileCheck_t)initialFileCheckAddr;
