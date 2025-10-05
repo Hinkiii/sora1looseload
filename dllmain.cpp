@@ -216,7 +216,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
-            DetourAttach((void**)&oAssetLoader, AssetLoader);
+            //DetourAttach((void**)&oAssetLoader, AssetLoader);
             DetourAttach((void**)&oInitialFileCheck, InitialFileCheck);
             DetourAttach((void**)&oDebugLogger, DebugLogger);
             DetourTransactionCommit();
