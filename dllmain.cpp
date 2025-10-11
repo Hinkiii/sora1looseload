@@ -9,6 +9,7 @@
 #include <atomic>
 #include <mutex>
 #include <share.h>
+#include <cstdarg>
 
 char g_gameDir[MAX_PATH] = {};
 FILE* gLogFile = nullptr;
@@ -75,55 +76,91 @@ __int64 __fastcall InitialFileCheck(__int64 a1, const char* a2, unsigned int a3,
     if (!a2)
         return oInitialFileCheck(a1, a2, a3, a4, a5);
 
+    size_t len = strlen(a2);
+    if (len >= 4 && _stricmp(a2 + len - 4, ".pac") == 0)
+        return oInitialFileCheck(a1, a2, a3, a4, a5);
+
     static thread_local char safeFullPath[MAX_PATH];
     static thread_local char localizedPath[MAX_PATH];
     const char* finalPath = a2;
 
+    size_t gameDirLen = 0;
+    bool gameDirHasSlash = false;
+    if (g_gameDir[0]) {
+        gameDirLen = strnlen_s(g_gameDir, MAX_PATH);
+        if (gameDirLen > 0) {
+            char last = g_gameDir[gameDirLen - 1];
+            gameDirHasSlash = (last == '\\' || last == '/');
+        }
+    }
+
+    auto normalize_to_backslashes = [](char* s) {
+        for (; *s; ++s) if (*s == '/') *s = '\\';
+        };
+
+    bool hasLocaleSuffix = false;
+
     if (oLocaleHandler && g_localeMgr)
     {
-        memset(localizedPath, 0, sizeof(localizedPath));
-
+        localizedPath[0] = '\0';
         oLocaleHandler(g_localeMgr, localizedPath, (unsigned __int16*)&a5, (char*)a2, 0);
 
         if (localizedPath[0])
         {
-            std::string src(a2);
-            std::string dest(localizedPath);
-            for (char& c : src) if (c == '\\') c = '/';
-            for (char& c : dest) if (c == '\\') c = '/';
+            char srcNorm[MAX_PATH];
+            char destNorm[MAX_PATH];
+            strncpy_s(srcNorm, sizeof(srcNorm), a2, _TRUNCATE);
+            strncpy_s(destNorm, sizeof(destNorm), localizedPath, _TRUNCATE);
 
-            size_t slashSrc = src.find('/');
-            size_t slashDest = dest.find('/');
-            if (slashSrc != std::string::npos && slashDest != std::string::npos)
+            for (char* p = srcNorm; *p; ++p) if (*p == '\\') *p = '/';
+            for (char* p = destNorm; *p; ++p) if (*p == '\\') *p = '/';
+
+            const char* slashSrc = strchr(srcNorm, '/');
+            const char* slashDest = strchr(destNorm, '/');
+
+            if (slashSrc && slashDest)
             {
-                std::string srcDir = src.substr(0, slashSrc);
-                std::string destDir = dest.substr(0, slashDest);
-                if (destDir.rfind(srcDir, 0) == 0 && destDir.length() > srcDir.length())
-                {
-                    std::string currentSuffix = destDir.substr(srcDir.length());
+                size_t srcDirLen = (size_t)(slashSrc - srcNorm);
+                size_t destDirLen = (size_t)(slashDest - destNorm);
+                if (destDirLen > srcDirLen && strncmp(destNorm, srcNorm, srcDirLen) == 0) {
+                    size_t suffixLen = destDirLen - srcDirLen;
+                    if (suffixLen < MAX_PATH) {
+                        char currentSuffix[MAX_PATH] = {};
+                        strncpy_s(currentSuffix, sizeof(currentSuffix), destNorm + srcDirLen, suffixLen);
+                        if (strlen(currentSuffix) > 0) {
+                            std::lock_guard<std::mutex> lock(g_localeMutex);
+                            g_localeSuffix = currentSuffix;
+                            hasLocaleSuffix = true;
+                            Log("[MOD] >>> Detected locale suffix: '%s'", currentSuffix);
+                        }
+                    }
                 }
             }
 
-            char fullPath[MAX_PATH];
-            snprintf(fullPath, MAX_PATH, "%s%s%s",
-                g_gameDir,
-                (g_gameDir[strlen(g_gameDir) - 1] == '\\' || g_gameDir[strlen(g_gameDir) - 1] == '/') ? "" : "\\",
-                localizedPath);
-
-            for (char* p = fullPath; *p; ++p)
-                if (*p == '/') *p = '\\';
-
-            Log("[MOD] Checking localized loose file: '%s'", fullPath);
-
-            if (FileExistsOnDisk(fullPath))
+            if (hasLocaleSuffix)
             {
-                Log("[MOD] Found localized loose file! Using '%s'", fullPath);
-                strncpy_s(safeFullPath, fullPath, sizeof(safeFullPath) - 1);
-                finalPath = safeFullPath;
-            }
-            else
-            {
-                return oInitialFileCheck(a1, localizedPath, a3, a4, a5);
+                char fullPath[MAX_PATH];
+                if (gameDirLen && gameDirHasSlash)
+                    snprintf(fullPath, sizeof(fullPath), "%s%s", g_gameDir, localizedPath);
+                else if (gameDirLen)
+                    snprintf(fullPath, sizeof(fullPath), "%s\\%s", g_gameDir, localizedPath);
+                else
+                    snprintf(fullPath, sizeof(fullPath), "%s", localizedPath);
+
+                normalize_to_backslashes(fullPath);
+
+                Log("[MOD] Checking localized loose file: '%s'", fullPath);
+
+                if (FileExistsOnDisk(fullPath))
+                {
+                    Log("[MOD] Found localized loose file! Using '%s'", fullPath);
+                    strncpy_s(safeFullPath, sizeof(safeFullPath), fullPath, _TRUNCATE);
+                    finalPath = safeFullPath;
+                }
+                else
+                {
+                    finalPath = localizedPath;
+                }
             }
         }
         else
@@ -135,20 +172,21 @@ __int64 __fastcall InitialFileCheck(__int64 a1, const char* a2, unsigned int a3,
     if (finalPath == a2)
     {
         char fullPathToCheck[MAX_PATH];
-        snprintf(fullPathToCheck, MAX_PATH, "%s%s%s",
-            g_gameDir,
-            (g_gameDir[strlen(g_gameDir) - 1] == '\\' || g_gameDir[strlen(g_gameDir) - 1] == '/') ? "" : "\\",
-            a2);
+        if (gameDirLen && gameDirHasSlash)
+            snprintf(fullPathToCheck, sizeof(fullPathToCheck), "%s%s", g_gameDir, a2);
+        else if (gameDirLen)
+            snprintf(fullPathToCheck, sizeof(fullPathToCheck), "%s\\%s", g_gameDir, a2);
+        else
+            snprintf(fullPathToCheck, sizeof(fullPathToCheck), "%s", a2);
 
-        for (char* p = fullPathToCheck; *p; ++p)
-            if (*p == '/') *p = '\\';
+        normalize_to_backslashes(fullPathToCheck);
 
         Log("[MOD] Checking standard loose file: '%s'", fullPathToCheck);
 
         if (FileExistsOnDisk(fullPathToCheck))
         {
             Log("[MOD] Standard loose file found: '%s'", fullPathToCheck);
-            strncpy_s(safeFullPath, fullPathToCheck, sizeof(safeFullPath) - 1);
+            strncpy_s(safeFullPath, sizeof(safeFullPath), fullPathToCheck, _TRUNCATE);
             finalPath = safeFullPath;
         }
     }
@@ -156,6 +194,8 @@ __int64 __fastcall InitialFileCheck(__int64 a1, const char* a2, unsigned int a3,
     Log("[MOD] Passing '%s' to original InitialFileCheck", finalPath);
     return oInitialFileCheck(a1, finalPath, a3, a4, a5);
 }
+
+
 
 void __fastcall DebugLogger(int a1, __int64 a2, __int64 a3, const char* a4, ...) {
     if (!a4) return;
@@ -177,26 +217,30 @@ void __fastcall hkLocaleHandler(__int64 mgr, char* dest, unsigned __int16* local
     oLocaleHandler(mgr, dest, locale, src, zero);
 
     if (src && dest && dest[0] != '\0') {
-        std::string s_src(src);
-        std::string s_dest(dest);
+        char s_src[MAX_PATH];
+        char s_dest[MAX_PATH];
+        strncpy_s(s_src, sizeof(s_src), src, _TRUNCATE);
+        strncpy_s(s_dest, sizeof(s_dest), dest, _TRUNCATE);
+        for (char* p = s_src; *p; ++p) if (*p == '\\') *p = '/';
+        for (char* p = s_dest; *p; ++p) if (*p == '\\') *p = '/';
 
-        for (char& c : s_src) if (c == '\\') c = '/';
-        for (char& c : s_dest) if (c == '\\') c = '/';
+        const char* firstSlashSrc = strchr(s_src, '/');
+        const char* firstSlashDest = strchr(s_dest, '/');
 
-        size_t firstSlashSrc = s_src.find('/');
-        size_t firstSlashDest = s_dest.find('/');
-
-        if (firstSlashSrc != std::string::npos && firstSlashDest != std::string::npos) {
-            std::string srcDir = s_src.substr(0, firstSlashSrc);
-            std::string destDir = s_dest.substr(0, firstSlashDest);
-
-            if (destDir.rfind(srcDir, 0) == 0 && destDir.length() > srcDir.length()) {
-                std::string currentSuffix = destDir.substr(srcDir.length());
-                {
-                    std::lock_guard<std::mutex> lock(g_localeMutex);
-                    g_localeSuffix = currentSuffix;
+        if (firstSlashSrc && firstSlashDest) {
+            size_t srcDirLen = (size_t)(firstSlashSrc - s_src);
+            size_t destDirLen = (size_t)(firstSlashDest - s_dest);
+            if (destDirLen > srcDirLen && strncmp(s_dest, s_src, srcDirLen) == 0) {
+                size_t suffixLen = destDirLen - srcDirLen;
+                if (suffixLen < MAX_PATH) {
+                    char currentSuffix[MAX_PATH] = {};
+                    strncpy_s(currentSuffix, sizeof(currentSuffix), s_dest + srcDirLen, suffixLen);
+                    {
+                        std::lock_guard<std::mutex> lock(g_localeMutex);
+                        g_localeSuffix = currentSuffix;
+                    }
+                    Log("[MOD] >>> Detected locale suffix: '%s'", currentSuffix);
                 }
-                Log("[MOD] >>> Detected locale suffix: '%s'", currentSuffix.c_str());
             }
         }
     }
